@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@main
+      - uses: DeterminateSystems/flakehub-cache-action@main
+
+      - name: Check Formatting
+        run: nix fmt -- --ci
+
+      - name: Run Flake Check
+        run: nix flake check
+
+      - name: Check Template
+        run: |
+          mkdir template && cd template
+          nix flake init -t "path:$GITHUB_WORKSPACE"
+          git init -q && git add -A
+          nix flake check --override-input helix-extras "path:$GITHUB_WORKSPACE" --no-write-lock-file
