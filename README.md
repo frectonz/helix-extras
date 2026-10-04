@@ -107,6 +107,27 @@ languages.python.auto-format = true;
 Languages Helix does not ship, such as roc, are included. For one that is not,
 define it here with at least `scope` and `file-types`.
 
+### Grammars
+
+Syntax highlighting for languages Helix does not ship, from
+[the catalog](src/grammars.nix):
+
+```nix
+grammars.roc.enable = true;
+```
+
+Or bring your own [tree-sitter](https://tree-sitter.github.io) grammar:
+
+```nix
+grammars.mylang = {
+  enable = true;
+  package = pkgs.tree-sitter.buildGrammar { ... };
+  queries = ./queries/mylang;
+};
+```
+
+`queries` defaults to the ones shipped in the package.
+
 ### Editor settings
 
 `settings` is written to [`.helix/config.toml`](https://docs.helix-editor.com/editor.html):

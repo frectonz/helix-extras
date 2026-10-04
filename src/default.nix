@@ -1,7 +1,6 @@
 {
   pkgs,
   lib ? pkgs.lib,
-  helix ? pkgs.helix,
 }:
 let
   inherit (lib)
@@ -16,11 +15,10 @@ let
     recursiveUpdate
     unique
     concatMap
+    concatStrings
     ;
 
-  helixConfig = builtins.fromTOML (
-    builtins.readFile "${helix.src or pkgs.helix-unwrapped.src}/languages.toml"
-  );
+  helixConfig = builtins.fromTOML (builtins.readFile "${pkgs.helix-unwrapped.src}/languages.toml");
   helixServers = helixConfig.language-server;
   helixLanguages = lib.listToAttrs (
     map (l: lib.nameValuePair l.name (l.language-servers or [ ])) helixConfig.language
@@ -38,10 +36,12 @@ let
   catalog = mapAttrs (name: s: defaults // helixServers.${name} or { } // s) (
     mapAttrs (_: _: { }) helixServers // import ./servers.nix { inherit pkgs; }
   );
+  grammarCatalog = import ./grammars.nix { inherit pkgs; };
 
   withConfig =
     {
       servers ? { },
+      grammars ? { },
       languages ? { },
       settings ? { },
       ignoreInGit ? true,
@@ -63,7 +63,20 @@ let
         in
         s // optionalAttrs (s.languages == "all") { languages = knownLanguages; };
       enabled = mapAttrs resolve (filterAttrs (_: s: s.enable or false) servers);
-      touched = unique (concatMap (s: s.languages) (attrValues enabled) ++ attrNames languages);
+      enabledGrammars = mapAttrs (
+        name: user:
+        let
+          g = grammarCatalog.${name} or { } // removeAttrs user [ "enable" ];
+        in
+        {
+          package = null;
+          queries = "${g.package}/queries";
+        }
+        // g
+      ) (filterAttrs (_: g: g.enable or false) grammars);
+      touched = unique (
+        concatMap (s: s.languages) (attrValues enabled) ++ attrNames enabledGrammars ++ attrNames languages
+      );
 
       languageEntry =
         lang:
@@ -128,6 +141,23 @@ let
       languagesToml = toml.generate "languages.toml" generated;
       configToml = if settings == { } then null else toml.generate "config.toml" settings;
       packages = filter (p: p != null) (mapAttrsToList (_: s: s.package) enabled);
+      runtime =
+        if enabledGrammars == { } then
+          pkgs.helix.runtime
+        else
+          pkgs.runCommand "helix-runtime" { } (
+            ''
+              mkdir -p $out/grammars $out/queries
+              ln -s ${pkgs.helix.runtime}/grammars/* $out/grammars
+              ln -s ${pkgs.helix.runtime}/queries/* $out/queries
+            ''
+            + concatStrings (
+              mapAttrsToList (name: g: ''
+                ln -sf ${g.package}/parser $out/grammars/${name}.so
+                ln -sfn ${g.queries} $out/queries/${name}
+              '') enabledGrammars
+            )
+          );
 
       problems =
         map (s: "${s.name}: no command known, set servers.${s.name}.command") (
@@ -135,6 +165,9 @@ let
         )
         ++ map (s: "${s.name}: attaches to no language, set servers.${s.name}.languages") (
           filter (s: s.languages == [ ]) (attrValues enabled)
+        )
+        ++ map (name: "${name}: no grammar known, set grammars.${name}.package") (
+          attrNames (filterAttrs (_: g: g.package == null) enabledGrammars)
         )
         ++ map (l: "unknown language '${l}', define it under languages.${l}") (
           filter (l: !(elem l knownLanguages)) touched
@@ -148,17 +181,18 @@ let
         languages_toml=${languagesToml}
         config_toml=${lib.optionalString (configToml != null) configToml}
         ignore_in_git=${lib.optionalString ignoreInGit "1"}
-        hx=${lib.getExe helix}
+        hx=${lib.getExe pkgs.helix-unwrapped}
+        export HELIX_RUNTIME=${runtime}
       ''
       + builtins.readFile ./wrapper.sh;
       derivationArgs.passthru = {
         inherit
-          helix
           generated
           languagesToml
           configToml
           enabled
           packages
+          runtime
           ;
       };
     };
@@ -166,5 +200,6 @@ in
 {
   inherit withConfig;
   servers = catalog;
+  grammars = grammarCatalog;
   languages = extraLanguages;
 }

@@ -2,6 +2,7 @@
 let
   inherit (pkgs) lib;
   catalog = import ./servers.nix { inherit pkgs; };
+  grammars = import ./grammars.nix { inherit pkgs; };
 
   example = pkgs.helix.withConfig {
     servers = {
@@ -22,6 +23,7 @@ let
         package = null;
       };
     };
+    grammars.roc.enable = true;
     settings.editor.rulers = [ 100 ];
   };
   language = name: lib.findFirst (l: l.name == name) null example.generated.language;
@@ -38,6 +40,7 @@ let
         nativeBuildInputs = [
           example
           pkgs.git
+          pkgs.expect
         ];
       }
       ''
@@ -104,7 +107,11 @@ in
 
   knows-bundled-language = scenario "knows-bundled-language" {
     when = "hx --health roc > health.txt";
-    expect = "grep -q roc_ls health.txt";
+    expect = ''
+      grep -q roc_ls health.txt
+      grep -q 'Tree-sitter parser:.*✓' health.txt
+      grep -q 'Highlight queries:.*✓' health.txt
+    '';
   };
 
   keeps-hand-written-file = scenario "keeps-hand-written-file" {
@@ -140,4 +147,31 @@ in
         package = null;
       }) (lib.filterAttrs (_: s: s.languages != [ ]) catalog);
     }).languagesToml;
+
+  every-grammar-compiles =
+    let
+      hx = pkgs.helix.withConfig {
+        grammars = lib.mapAttrs (_: _: { enable = true; }) grammars;
+      };
+      files = map (
+        name: "file." + lib.findFirst lib.isString null (import ./languages.nix).${name}.file-types
+      ) (lib.attrNames grammars);
+    in
+    scenario "every-grammar-compiles" {
+      given = "touch ${toString files}";
+      when = ''
+        expect -c '
+          log_user 0
+          set stty_init "rows 24 cols 80"
+          spawn ${lib.getExe hx} -v --log log.txt ${toString files}
+          sleep 2
+          send ":qa!\r"
+          expect eof
+        '
+      '';
+      expect = ''
+        test -f log.txt
+        if grep -A5 'Failed to compile' log.txt; then exit 1; fi
+      '';
+    };
 }
